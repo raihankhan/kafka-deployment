@@ -1,0 +1,63 @@
+# =============================================================================
+# Kafbat UI – connect to the external-kafka cluster
+# =============================================================================
+# Kafbat is a modern web UI for Apache Kafka. The repo's
+# `external-kafka` Service (deployed via values.yaml) is reachable from
+# within the cluster at:
+#
+#     external-kafka.kafka.svc.cluster.local:9092
+#
+# This values file wires Kafbat to that bootstrap server and exposes
+# the UI via a NodePort so it can be opened from a browser on macOS
+# when KIND's host port is mapped (see README for the port-forward
+# alternative).
+# =============================================================================
+
+yamlApplicationConfig:
+  kafka:
+    clusters:
+      - name: external-kafka
+        # In-cluster DNS of the combined-mode Kafka Service.
+        bootstrapServers: external-kafka:9092
+        # We use PLAINTEXT on the in-cluster listener; tell Kafbat
+        # not to try TLS or SASL.
+        securityProtocol: PLAINTEXT
+        properties:
+          reconnect.backoff.ms: 500
+          reconnect.backoff.max.ms: 10000
+  auth:
+    type: disabled
+  management:
+    health:
+      ldap:
+        enabled: false
+
+# No cluster-side auth (matches the PLAINTEXT listener on the
+# combined-mode cluster).
+existingConfigMap: ""
+
+# ------------------------------------------------------------------
+# Expose the UI on a NodePort. KIND's default extra-port-mappings
+# are 80->30000, 443->30001 when the cluster is created with the
+# `extraPortMappings` flag — adjust `nodePort` to match yours.
+# The README also documents `kubectl port-forward` as the
+# no-config alternative for a quick look.
+# ------------------------------------------------------------------
+service:
+  type: NodePort
+  port: 8080
+  # If you created KIND with port 8080 mapped, pick a NodePort in
+  # the 30000-32767 range; otherwise port-forward instead.
+  nodePort: 30080
+
+# Single replica is plenty for a local UI
+replicaCount: 1
+
+# Modest resources
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

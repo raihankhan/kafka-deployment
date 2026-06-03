@@ -1,0 +1,173 @@
+# =============================================================================
+# Bitnami Kafka – KRaft mode, DEDICATED controllers
+# =============================================================================
+# Production-shaped topology:
+#   - 3 dedicated controller pods (KRaft quorum, no broker role)
+#   - 3 broker-only pods (data plane, no controller role)
+#   - Each role sized, persisted, and scaled independently
+#   - Same KRaft secret + bitnamilegacy image overrides as values.yaml
+#
+# Install on a different release name than `external-kafka` to keep the
+# combined-mode cluster from `values.yaml` running side-by-side:
+#   helm install dedicated-kafka oci://.../bitnamicharts/kafka \
+#     --namespace kafka -f values-prod-dedicated.yaml --wait --timeout 15m
+# =============================================================================
+
+global:
+  storageClass: "standard"
+
+# ------------------------------------------------------------------
+# KRaft controller configuration
+# ------------------------------------------------------------------
+kraft:
+  enabled: true
+  existingSecret: "kafka-kraft-secret"   # contains `kraft-cluster-id`
+
+# Hard-disable Zookeeper
+zookeeper:
+  enabled: false
+
+# ------------------------------------------------------------------
+# Listeners
+#   - client:       in-cluster PLAINTEXT on 9092 (served by brokers)
+#   - controller:   in-cluster PLAINTEXT on 9093 (KRaft quorum)
+#   - interbroker:  PLAINTEXT on 9094 (replication)
+# ------------------------------------------------------------------
+listeners:
+  client:
+    protocol: PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+# ------------------------------------------------------------------
+# Cluster topology – dedicated (separated) controllers
+# ------------------------------------------------------------------
+controller:
+  # Dedicated mode: controller pods do NOT also serve as brokers.
+  controllerOnly: true
+  replicaCount: 3
+  # Controller nodes keep id 0..2; brokers take 100..102.
+  minId: 0
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+  logPersistence:
+    enabled: false                        # keep PVCs lean
+  # Controllers are quorum-only; they don't need much memory.
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"
+  # JVM heap for controllers
+  heapOpts: "-Xmx768m -Xms512m"
+
+broker:
+  # Activated because controllerOnly=true; with combined mode it stays 0.
+  replicaCount: 3
+  minId: 100
+  persistence:
+    enabled: true
+    size: 50Gi                            # brokers carry the data
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+  logPersistence:
+    enabled: false
+  # Brokers do the heavy lifting (page cache, JVM, network).
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "3Gi"
+      cpu: "2"
+  # JVM heap for brokers
+  heapOpts: "-Xmx2g -Xms2g"
+
+# Top-level `replicaCount` is honored by both the chart's broker SS
+# and as a fallback for any sidecar that needs it.
+replicaCount: 3
+
+# Top-level resources (sidecars / init containers)
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+# ------------------------------------------------------------------
+# Image – same bitnamilegacy override as combined mode
+# ------------------------------------------------------------------
+image:
+  registry: docker.io
+  repository: bitnamilegacy/kafka
+  tag: "4.0.0-debian-12-r10"
+  pullPolicy: IfNotPresent
+
+# Helper image overrides (Bitnami moved repos).
+defaultInitContainers:
+  volumePermissions:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/os-shell
+      tag: 12-debian-12-r51
+      pullPolicy: IfNotPresent
+  autoDiscovery:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/kubectl
+      tag: 1.33.4-debian-12-r0
+      pullPolicy: IfNotPresent
+
+# JMX exporter disabled (image also moved out of bitnami/)
+metrics:
+  jmx:
+    enabled: false
+
+# ------------------------------------------------------------------
+# Service exposure – the main service fronts the broker-only SS
+# ------------------------------------------------------------------
+service:
+  type: ClusterIP
+  ports:
+    client: 9092
+
+# ------------------------------------------------------------------
+# Probes
+# ------------------------------------------------------------------
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 10
+  failureThreshold: 6
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# ------------------------------------------------------------------
+# Topic / replication defaults
+# ------------------------------------------------------------------
+logRetentionHours: 168                    # 7 days
+logRetentionBytes: 1073741824            # 1 GiB per partition
+numPartitions: 1
+defaultReplicationFactor: 3
+minInsyncReplicas: 2
+
+# Pod anti-affinity keeps brokers (and controllers) on different nodes
+podAntiAffinityPreset: soft

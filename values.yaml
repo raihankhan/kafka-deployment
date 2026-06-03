@@ -1,0 +1,157 @@
+# =============================================================================
+# Bitnami Kafka – KRaft mode values for local KIND cluster
+# =============================================================================
+# Tuned for a single-node KIND cluster on macOS:
+#   - KRaft-only (Zookeeper is hard-disabled)
+#   - Combined mode: brokers double as controllers (saves resources)
+#   - PLAINTEXT listeners (loopback inside the cluster)
+#   - Persistent storage using the default `standard` StorageClass (local-path)
+#   - Conservative CPU/memory requests so KIND can schedule 3 pods
+# =============================================================================
+
+global:
+  storageClass: "standard"
+
+# ------------------------------------------------------------------
+# KRaft controller configuration
+# ------------------------------------------------------------------
+kraft:
+  enabled: true
+  existingSecret: "kafka-kraft-secret"   # contains `kraft-cluster-id`
+
+# ------------------------------------------------------------------
+# Hard-disable Zookeeper (Bitnami chart allows it for legacy mode)
+# ------------------------------------------------------------------
+zookeeper:
+  enabled: false
+
+# ------------------------------------------------------------------
+# Cluster topology: 3 nodes, combined broker+controller
+# ------------------------------------------------------------------
+replicaCount: 3
+
+# ------------------------------------------------------------------
+# Listeners
+#   - client:    in-cluster PLAINTEXT on 9092
+#   - controller: in-cluster PLAINTEXT on 9093
+#   - inter-broker: PLAINTEXT on 9094
+# ------------------------------------------------------------------
+listeners:
+  client:
+    protocol: PLAINTEXT
+  controller:
+    protocol: PLAINTEXT
+  interbroker:
+    protocol: PLAINTEXT
+
+# ------------------------------------------------------------------
+# Persistence – one data PVC per combined broker+controller pod.
+# In combined mode the pods use `controller.*` keys (the broker-only
+# block is unused because we set `replicaCount: 3` and rely on the
+# controller StatefulSet that doubles as brokers).
+# ------------------------------------------------------------------
+controller:
+  replicaCount: 3
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+  logPersistence:
+    enabled: false                        # keep PVCs lean on local-path
+    size: 5Gi
+    storageClass: "standard"
+    accessModes:
+      - ReadWriteOnce
+  # In combined mode these become the broker+controller pod resources
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"
+
+# Top-level `resources` are honored by the chart's side containers
+# (init containers, jmx exporter when enabled, etc.)
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+# JVM heap (kept slightly under the 1Gi memory limit)
+heapOpts: "-Xmx768m -Xms512m"
+
+# ------------------------------------------------------------------
+# Image – pinned to a recent Bitnami Kafka 4.x build (KRaft native)
+# ------------------------------------------------------------------
+image:
+  registry: docker.io
+  repository: bitnamilegacy/kafka
+  tag: "4.0.0-debian-12-r10"
+  pullPolicy: IfNotPresent
+
+# Bitnami moved its image registry to `bitnamilegacy/*` (the chart's
+# default `docker.io/bitnami/*` references no longer resolve). Override
+# the helper images used by the chart's init containers.
+defaultInitContainers:
+  volumePermissions:
+    enabled: false                         # not needed on local-path volumes
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/os-shell
+      tag: 12-debian-12-r51
+      pullPolicy: IfNotPresent
+  autoDiscovery:
+    enabled: false                         # we set cluster.id via the secret
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/kubectl
+      tag: 1.33.4-debian-12-r0
+      pullPolicy: IfNotPresent
+
+# Disable JMX exporter (it pulls from bitnami/jmx-exporter which is also moved)
+metrics:
+  jmx:
+    enabled: false
+
+# ------------------------------------------------------------------
+# Service exposure
+# ------------------------------------------------------------------
+service:
+  type: ClusterIP
+  ports:
+    client: 9092
+
+# ------------------------------------------------------------------
+# Probes – quicker timeouts so KIND's slow fs doesn't look like a hang
+# ------------------------------------------------------------------
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 10
+  failureThreshold: 6
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# ------------------------------------------------------------------
+# Misc
+# ------------------------------------------------------------------
+logRetentionHours: 168                    # 7 days
+logRetentionBytes: 1073741824            # 1 GiB per partition
+numPartitions: 1
+defaultReplicationFactor: 3
+minInsyncReplicas: 2
+
+# Bitnami chart's pod anti-affinity is off by default – enable so the
+# three brokers land on different (virtual) nodes when scaling KIND.
+podAntiAffinityPreset: soft
